@@ -586,7 +586,7 @@ class PeftAdapterMixin:
         def is_adapter_key(key: str) -> bool:
             return any(marker in key for marker in adapter_key_markers)
 
-        loading_info.missing_keys = [k for k in loading_info.missing_keys if is_adapter_key(k)]
+        loading_info.missing_keys = {k for k in loading_info.missing_keys if is_adapter_key(k)}
 
         log_state_dict_report(
             model=self,
