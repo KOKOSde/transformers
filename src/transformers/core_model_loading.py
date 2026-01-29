@@ -660,7 +660,7 @@ class WeightRenaming(WeightTransform):
         model=None,
         config=None,
         hf_quantizer=None,
-        loading_infos: LoadStateDictInfo | None = None,
+        loading_info: LoadStateDictInfo | None = None,
     ):
         # Collect the tensors here - we use a new dictionary to avoid keeping them in memory in the internal
         # attribute during the whole process
@@ -673,7 +673,7 @@ class WeightRenaming(WeightTransform):
 
         if hf_quantizer is not None and self.quantization_operation is not None:
             with log_conversion_errors(
-                layer_name, loading_infos, (len(collected_tensors), layer_name), self.quantization_operation
+                layer_name, loading_info, (len(collected_tensors), layer_name), self.quantization_operation
             ):
                 collected_tensors = self.quantization_operation.convert(
                     collected_tensors,
@@ -682,7 +682,7 @@ class WeightRenaming(WeightTransform):
                     full_layer_name=target_key,
                     model=model,
                     config=config,
-                    missing_keys=loading_infos.missing_keys,
+                    missing_keys=loading_info.missing_keys,
                 )
 
         return collected_tensors
@@ -716,14 +716,14 @@ class WeightConverter(WeightTransform):
         model=None,
         config=None,
         hf_quantizer=None,
-        loading_infos: LoadStateDictInfo | None = None,
+        loading_info: LoadStateDictInfo | None = None,
     ):
         # Collect the tensors here - we use a new dictionary to avoid keeping them in memory in the internal
         # attribute during the whole process
         collected_tensors = self.materialize_tensors()
 
         for op in self.operations:
-            with log_conversion_errors(layer_name, loading_infos, (len(collected_tensors), layer_name), op):
+            with log_conversion_errors(layer_name, loading_info, (len(collected_tensors), layer_name), op):
                 collected_tensors = op.convert(
                     collected_tensors,
                     source_patterns=self.source_patterns,
@@ -732,7 +732,7 @@ class WeightConverter(WeightTransform):
                     full_layer_name=layer_name,
                     model=model,
                     config=config,
-                    missing_keys=loading_infos.missing_keys,
+                    missing_keys=loading_info.missing_keys,
                 )
 
         # Tensors are returned from ops with the target patterns, we need to expand them to full name.
@@ -751,7 +751,7 @@ class WeightConverter(WeightTransform):
 
         if hf_quantizer is not None and self.quantization_operation is not None:
             with log_conversion_errors(
-                layer_name, loading_infos, (len(collected_tensors), layer_name), self.quantization_operation
+                layer_name, loading_info, (len(collected_tensors), layer_name), self.quantization_operation
             ):
                 collected_tensors = self.quantization_operation.convert(
                     collected_tensors,
@@ -760,7 +760,7 @@ class WeightConverter(WeightTransform):
                     full_layer_name=layer_name,
                     config=config,
                     model=model,
-                    missing_keys=loading_infos.missing_keys,
+                    missing_keys=loading_info.missing_keys,
                 )
         return collected_tensors
 
@@ -825,7 +825,7 @@ def dot_natural_key(s: str):
 @contextmanager
 def log_conversion_errors(
     first_target_key: str,
-    loading_infos: LoadStateDictInfo | None,
+    loading_info: LoadStateDictInfo | None,
     extras: Any = None,
     op: list[ConversionOps] | ConversionOps | None = None,
 ):
@@ -835,7 +835,7 @@ def log_conversion_errors(
         yield
     except Exception as e:
         # During reverse mapping, we do not log and skip errors
-        if loading_infos is None:
+        if loading_info is None:
             raise e
 
         def _format_op_name(curr_op: list[ConversionOps] | ConversionOps | None) -> str | None:
@@ -852,18 +852,16 @@ def log_conversion_errors(
         if isinstance(extras, tuple) and len(extras) == 2:
             length, target_keys = extras
             descriptor = f"{op_name} " if op_name else ""
-            loading_infos.conversion_errors[first_target_key] = (
+            loading_info.conversion_errors[first_target_key] = (
                 f"{e}\nError: {descriptor}on tensors destined for {target_keys}. Ckpt contains: {length}"
             )
         elif isinstance(extras, str):
             suffix = f" via {op_name}" if op_name else ""
-            loading_infos.conversion_errors[first_target_key] = (
-                f"{e}\nError{suffix} when processing parameter {extras}"
-            )
+            loading_info.conversion_errors[first_target_key] = f"{e}\nError{suffix} when processing parameter {extras}"
         elif extras is None and op_name:
-            loading_infos.conversion_errors[first_target_key] = f"{op_name}: {e}"
+            loading_info.conversion_errors[first_target_key] = f"{op_name}: {e}"
         else:
-            loading_infos.conversion_errors[first_target_key] = f"{extras} |Error: {e}"
+            loading_info.conversion_errors[first_target_key] = f"{extras} |Error: {e}"
 
         # Raise a specific Exception that we can catch easily
         raise SkipParameters()
@@ -913,7 +911,7 @@ def set_param_for_module(
 def offload_and_maybe_resave_param(
     target_name: str,
     param: torch.Tensor,
-    loading_infos: LoadStateDictInfo,
+    loading_info: LoadStateDictInfo,
     disk_offload_folder: str,
     disk_offload_index: dict,
     applied_ops: WeightConverter | WeightRenaming,
@@ -922,7 +920,7 @@ def offload_and_maybe_resave_param(
     WeightConverter operations have been applied, it will resave the new parameter. Otherwise, it will use the original
     `disk_offload_index` for this given param."""
     # We need to remove from missing keys
-    loading_infos.missing_keys.discard(target_name)
+    loading_info.missing_keys.discard(target_name)
     # If not already offloaded, or if we applied any special Operation except Renaming, we need to re-save
     if target_name not in disk_offload_index or isinstance(applied_ops, WeightConverter):
         disk_offload_index = offload_weight(param, target_name, disk_offload_folder, disk_offload_index)
@@ -1082,7 +1080,7 @@ def convert_and_load_state_dict_in_model(
     model_buffers = {k for k, _ in model.named_buffers()}
 
     # We start from all missing keys, and we will remove/add them from the proper containers as loading advances
-    loading_infos = LoadStateDictInfo(
+    loading_info = LoadStateDictInfo(
         missing_keys=set(meta_model_state_dict.keys()),
         unexpected_keys=set(),
         mismatched_keys=set(),
@@ -1179,9 +1177,9 @@ def convert_and_load_state_dict_in_model(
         elif source_pattern is not None:  # add all target keys as unexpected
             mapping = pattern_to_converter[source_pattern]
             for k in mapping.target_patterns:
-                loading_infos.unexpected_keys.add(renamed_key.replace(mapping.target_patterns[0], k))
+                loading_info.unexpected_keys.add(renamed_key.replace(mapping.target_patterns[0], k))
         else:
-            loading_infos.unexpected_keys.add(renamed_key)
+            loading_info.unexpected_keys.add(renamed_key)
 
     try:
         total_entries = len(param_name_to_load)
@@ -1196,7 +1194,7 @@ def convert_and_load_state_dict_in_model(
                         model=model,
                         config=model.config,
                         hf_quantizer=hf_quantizer,
-                        loading_infos=loading_infos,
+                        loading_info=loading_info,
                     )
                     for target_name, param in realized_value.items():
                         param = param[0] if isinstance(param, list) else param
@@ -1204,14 +1202,14 @@ def convert_and_load_state_dict_in_model(
                         # Offloading support
                         if param_device == "disk" and (target_name not in model_buffers or offload_buffers):
                             disk_offload_index = offload_and_maybe_resave_param(
-                                target_name, param, loading_infos, disk_offload_folder, disk_offload_index, mapping
+                                target_name, param, loading_info, disk_offload_folder, disk_offload_index, mapping
                             )
                         else:
                             set_param_for_module(
                                 model,
                                 target_name,
                                 param,
-                                loading_infos,
+                                loading_info,
                                 mapping.distributed_operation,
                                 hf_quantizer,
                             )
@@ -1230,7 +1228,7 @@ def convert_and_load_state_dict_in_model(
 
     # Keep the current weight conversion mapping for later saving (in case it was coming directly from the user)
     model._weight_conversions = weight_mapping
-    return loading_infos, disk_offload_index
+    return loading_info, disk_offload_index
 
 
 def revert_weight_conversion(model: PreTrainedModel, state_dict: dict[str, torch.Tensor]):

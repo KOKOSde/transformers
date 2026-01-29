@@ -221,7 +221,7 @@ def log_state_dict_report(
     model,
     load_config,
     logger: logging.Logger | None = None,
-    loading_infos: LoadStateDictInfo,
+    loading_info: LoadStateDictInfo,
 ):
     """
     Log a readable report about state_dict loading issues.
@@ -236,8 +236,8 @@ def log_state_dict_report(
     ignore_mismatched_sizes = load_config.ignore_mismatched_sizes
 
     # Re-raise errors early if needed
-    if loading_infos.error_msgs:
-        error_msg = "\n\t".join(loading_infos.error_msgs)
+    if loading_info.error_msgs:
+        error_msg = "\n\t".join(loading_info.error_msgs)
         if "size mismatch" in error_msg:
             error_msg += (
                 "\n\tYou may consider adding `ignore_mismatched_sizes=True` to `from_pretrained(...)` if appropriate."
@@ -245,7 +245,7 @@ def log_state_dict_report(
         raise RuntimeError(f"Error(s) in loading state_dict for {model.__class__.__name__}:\n\t{error_msg}")
 
     # Create the report table
-    report = loading_infos.create_loading_report()
+    report = loading_info.create_loading_report()
     if report is None:
         return
 
@@ -255,12 +255,12 @@ def log_state_dict_report(
     logger.warning(prelude + report)
 
     # Re-raise in those case, after the report
-    if loading_infos.conversion_errors:
+    if loading_info.conversion_errors:
         raise RuntimeError(
             "We encountered some issues during automatic conversion of the weights. For details look at the `CONVERSION` entries of "
             "the above report!"
         )
-    if not ignore_mismatched_sizes and loading_infos.mismatched_keys:
+    if not ignore_mismatched_sizes and loading_info.mismatched_keys:
         raise RuntimeError(
             "You set `ignore_mismatched_sizes` to `False`, thus raising an error. For details look at the above report!"
         )

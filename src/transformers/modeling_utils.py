@@ -4183,7 +4183,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
                 state_dict = merged_state_dict
             error_msgs, missing_keys = _load_state_dict_into_zero3_model(model, state_dict, load_config)
             # This is not true but for now we assume only best-case scenario with deepspeed, i.e. perfectly matching checkpoints
-            loading_infos = LoadStateDictInfo(
+            loading_info = LoadStateDictInfo(
                 missing_keys=missing_keys,
                 error_msgs=error_msgs,
                 unexpected_keys=set(),
@@ -4209,7 +4209,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
             else:
                 raise ValueError("Neither a state dict nor checkpoint files were found.")
 
-            loading_infos, disk_offload_index = convert_and_load_state_dict_in_model(
+            loading_info, disk_offload_index = convert_and_load_state_dict_in_model(
                 model=model,
                 state_dict=merged_state_dict,
                 load_config=load_config,
@@ -4228,7 +4228,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         # Move missing (and potentially mismatched) keys and non-persistent buffers back to their expected device from
         # meta device (because they were not moved when loading the weights as they were not in the loaded state dict)
         model._move_missing_keys_from_meta_to_device(
-            loading_infos.missing_and_mismatched,
+            loading_info.missing_and_mismatched(),
             load_config.device_map,
             load_config.device_mesh,
             load_config.hf_quantizer,
@@ -4238,19 +4238,19 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         model._initialize_missing_keys(load_config.is_quantized)
 
         # Tie the weights
-        model.tie_weights(missing_keys=loading_infos.missing_keys, recompute_mapping=False)
+        model.tie_weights(missing_keys=loading_info.missing_keys, recompute_mapping=False)
 
         # Adjust missing and unexpected keys
-        model._adjust_missing_and_unexpected_keys(loading_infos)
+        model._adjust_missing_and_unexpected_keys(loading_info)
 
         log_state_dict_report(
             model=model,
             load_config=load_config,
             logger=logger,
-            loading_infos=loading_infos,
+            loading_info=loading_info,
         )
 
-        return loading_infos, disk_offload_index
+        return loading_info, disk_offload_index
 
     def retrieve_modules_from_names(self, names, add_prefix=False, remove_prefix=False):
         module_keys = {".".join(key.split(".")[:-1]) for key in names}
@@ -4506,7 +4506,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         else:
             self.initialize_weights()
 
-    def _adjust_missing_and_unexpected_keys(self, loading_infos: LoadStateDictInfo) -> None:
+    def _adjust_missing_and_unexpected_keys(self, loading_info: LoadStateDictInfo) -> None:
         """Adjust the `missing_keys` and `unexpected_keys` based on current model's exception rules, to avoid
         raising unneeded warnings/errors. This is performed in-place.
         """
@@ -4526,14 +4526,14 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
 
         # Clean-up missing keys
         if ignore_missing_regex is not None:
-            loading_infos.missing_keys = {
-                key for key in loading_infos.missing_keys if ignore_missing_regex.search(key) is None
+            loading_info.missing_keys = {
+                key for key in loading_info.missing_keys if ignore_missing_regex.search(key) is None
             }
 
         # Clean-up unexpected keys
         if ignore_unexpected_regex is not None:
-            loading_infos.unexpected_keys = {
-                key for key in loading_infos.unexpected_keys if ignore_unexpected_regex.search(key) is None
+            loading_info.unexpected_keys = {
+                key for key in loading_info.unexpected_keys if ignore_unexpected_regex.search(key) is None
             }
 
     def mark_tied_weights_as_initialized(self):
