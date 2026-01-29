@@ -33,6 +33,7 @@ import torch
 from .integrations.accelerate import get_device, offload_weight
 from .integrations.tensor_parallel import ALL_PARALLEL_STYLES
 from .utils import is_env_variable_true, is_torch_greater_or_equal, logging
+from .utils.loading_report import LoadStateDictInfo
 
 
 _torch_distributed_available = torch.distributed.is_available()
@@ -47,31 +48,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.get_logger(__name__)
-
-
-@dataclass
-class LoadStateDictInfo:
-    """
-    Mutable container for state-dict loading results and diagnostics. Each entry in this structure is mutable,
-    and will usually be mutated in-place during the loading pipeline.
-    """
-
-    missing_keys: set[str]
-    unexpected_keys: set[str]
-    mismatched_keys: set[tuple[str, torch.Size]]
-    error_msgs: list[str]
-    conversion_errors: set[str]
-
-    def missing_and_mismatched(self):
-        return self.missing_keys | {k[0] for k in self.mismatched_keys}
-
-    def to_dict(self):
-        return {
-            "missing_keys": self.missing_keys,
-            "unexpected_keys": self.unexpected_keys,
-            "mismatched_keys": self.mismatched_keys,
-            "error_msgs": self.error_msgs,
-        }
 
 
 def process_target_pattern(pattern: str) -> tuple[str, str | None]:

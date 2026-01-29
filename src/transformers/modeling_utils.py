@@ -47,7 +47,6 @@ from . import initialization as init
 from .configuration_utils import PreTrainedConfig
 from .conversion_mapping import get_model_conversion_mapping
 from .core_model_loading import (
-    LoadStateDictInfo,
     WeightConverter,
     WeightRenaming,
     convert_and_load_state_dict_in_model,
@@ -128,7 +127,7 @@ from .utils.import_utils import (
     is_sagemaker_mp_enabled,
     is_tracing,
 )
-from .utils.loading_report import log_state_dict_report
+from .utils.loading_report import LoadStateDictInfo, log_state_dict_report
 from .utils.quantization_config import QuantizationMethod
 
 

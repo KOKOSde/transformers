@@ -16,7 +16,35 @@ import re
 import shutil
 import sys
 from collections import OrderedDict, defaultdict
+from dataclasses import dataclass
 from typing import Any
+
+
+@dataclass
+class LoadStateDictInfo:
+    """
+    Mutable container for state-dict loading results and diagnostics. Each entry in this structure is mutable,
+    and will usually be mutated in-place during the loading pipeline.
+    """
+
+    missing_keys: set[str]
+    unexpected_keys: set[str]
+    mismatched_keys: set[tuple[str, tuple[int]]]
+    error_msgs: list[str]
+    conversion_errors: set[str]
+
+    def missing_and_mismatched(self):
+        """Return all effectively missing keys, including `missing` and `mismatched` keys."""
+        return self.missing_keys | {k[0] for k in self.mismatched_keys}
+
+    def to_dict(self):
+        # Does not include the `conversion_errors` to be coherent with legacy reporting in the tests
+        return {
+            "missing_keys": self.missing_keys,
+            "unexpected_keys": self.unexpected_keys,
+            "mismatched_keys": self.mismatched_keys,
+            "error_msgs": self.error_msgs,
+        }
 
 
 _DIGIT_RX = re.compile(r"(?<=\.)(\d+)(?=\.|$)")  # numbers between dots or at the end
