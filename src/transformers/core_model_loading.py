@@ -49,6 +49,21 @@ if TYPE_CHECKING:
 logger = logging.get_logger(__name__)
 
 
+
+@dataclass
+class LoadStateDictInfo:
+    """
+    Mutable container for state-dict loading results and diagnostics. Each entry in this structure is mutable,
+    and will usually be mutated in-place during the loading pipeline.
+    """
+
+    missing_keys: set[str]
+    unexpected_keys: set[str]
+    mismatched_keys: set[tuple[str, torch.Size]]
+    error_msgs: list[str]
+    conversion_errors: set[str]
+
+
 def process_target_pattern(pattern: str) -> tuple[str, str | None]:
     """
     Process a target pattern for reverse mapping (when targets become sources).
@@ -688,8 +703,7 @@ class WeightRenaming(WeightTransform):
         model=None,
         config=None,
         hf_quantizer=None,
-        missing_keys: MutableSet[str] | None = None,
-        conversion_errors: MutableMapping[str, str] | None = None,
+        loading_infos: LoadStateDictInfo | None = None,
     ):
         # Collect the tensors here - we use a new dictionary to avoid keeping them in memory in the internal
         # attribute during the whole process
@@ -702,7 +716,7 @@ class WeightRenaming(WeightTransform):
 
         if hf_quantizer is not None and self.quantization_operation is not None:
             with log_conversion_errors(
-                layer_name, conversion_errors, (len(collected_tensors), layer_name), self.quantization_operation
+                layer_name, loading_infos, (len(collected_tensors), layer_name), self.quantization_operation
             ):
                 collected_tensors = self.quantization_operation.convert(
                     collected_tensors,
@@ -711,10 +725,10 @@ class WeightRenaming(WeightTransform):
                     full_layer_name=target_key,
                     model=model,
                     config=config,
-                    missing_keys=missing_keys,
+                    missing_keys=loading_infos.missing_keys,
                 )
 
-        return collected_tensors, conversion_errors
+        return collected_tensors
 
 
 # List of classes that are known to be able to use m:n
@@ -744,15 +758,14 @@ class WeightConverter(WeightTransform):
         model=None,
         config=None,
         hf_quantizer=None,
-        missing_keys: MutableSet[str] | None = None,
-        conversion_errors: MutableMapping[str, str] | None = None,
+        loading_infos: LoadStateDictInfo | None = None,
     ):
         # Collect the tensors here - we use a new dictionary to avoid keeping them in memory in the internal
         # attribute during the whole process
         collected_tensors = self.materialize_tensors()
 
         for op in self.operations:
-            with log_conversion_errors(layer_name, conversion_errors, (len(collected_tensors), layer_name), op):
+            with log_conversion_errors(layer_name, loading_infos, (len(collected_tensors), layer_name), op):
                 collected_tensors = op.convert(
                     collected_tensors,
                     source_patterns=self.source_patterns,
@@ -761,7 +774,7 @@ class WeightConverter(WeightTransform):
                     full_layer_name=layer_name,
                     model=model,
                     config=config,
-                    missing_keys=missing_keys,
+                    missing_keys=loading_infos.missing_keys,
                 )
 
         # Tensors are returned from ops with the target patterns, we need to expand them to full name.
@@ -780,7 +793,7 @@ class WeightConverter(WeightTransform):
 
         if hf_quantizer is not None and self.quantization_operation is not None:
             with log_conversion_errors(
-                layer_name, conversion_errors, (len(collected_tensors), layer_name), self.quantization_operation
+                layer_name, loading_infos, (len(collected_tensors), layer_name), self.quantization_operation
             ):
                 collected_tensors = self.quantization_operation.convert(
                     collected_tensors,
@@ -789,9 +802,9 @@ class WeightConverter(WeightTransform):
                     full_layer_name=layer_name,
                     config=config,
                     model=model,
-                    missing_keys=missing_keys,
+                    missing_keys=loading_infos.missing_keys,
                 )
-        return collected_tensors, conversion_errors
+        return collected_tensors
 
 
 # For I/O bound operations (i.e. here reading files), it is better to have fewer threads, e.g. 4 is a good default.
@@ -854,7 +867,7 @@ def dot_natural_key(s: str):
 @contextmanager
 def log_conversion_errors(
     first_target_key: str,
-    conversion_errors: MutableMapping[str, str] | None,
+    loading_infos: LoadStateDictInfo | None,
     extras: Any = None,
     op: list[ConversionOps] | ConversionOps | None = None,
 ):
@@ -864,7 +877,7 @@ def log_conversion_errors(
         yield
     except Exception as e:
         # During reverse mapping, we do not log and skip errors
-        if conversion_errors is None:
+        if loading_infos is None:
             raise e
 
         def _format_op_name(curr_op: list[ConversionOps] | ConversionOps | None) -> str | None:
@@ -881,16 +894,16 @@ def log_conversion_errors(
         if isinstance(extras, tuple) and len(extras) == 2:
             length, target_keys = extras
             descriptor = f"{op_name} " if op_name else ""
-            conversion_errors[first_target_key] = (
+            loading_infos.conversion_errors[first_target_key] = (
                 f"{e}\nError: {descriptor}on tensors destined for {target_keys}. Ckpt contains: {length}"
             )
         elif isinstance(extras, str):
             suffix = f" via {op_name}" if op_name else ""
-            conversion_errors[first_target_key] = f"{e}\nError{suffix} when processing parameter {extras}"
+            loading_infos.conversion_errors[first_target_key] = f"{e}\nError{suffix} when processing parameter {extras}"
         elif extras is None and op_name:
-            conversion_errors[first_target_key] = f"{op_name}: {e}"
+            loading_infos.conversion_errors[first_target_key] = f"{op_name}: {e}"
         else:
-            conversion_errors[first_target_key] = f"{extras} |Error: {e}"
+            loading_infos.conversion_errors[first_target_key] = f"{extras} |Error: {e}"
 
         # Raise a specific Exception that we can catch easily
         raise SkipParameters()
@@ -940,7 +953,7 @@ def set_param_for_module(
 def offload_and_maybe_resave_param(
     target_name: str,
     param: torch.Tensor,
-    missing_keys: MutableSet[str],
+    loading_infos: LoadStateDictInfo,
     disk_offload_folder: str,
     disk_offload_index: dict,
     applied_ops: WeightConverter | WeightRenaming,
@@ -949,7 +962,7 @@ def offload_and_maybe_resave_param(
     WeightConverter operations have been applied, it will resave the new parameter. Otherwise, it will use the original
     `disk_offload_index` for this given param."""
     # We need to remove from missing keys
-    missing_keys.discard(target_name)
+    loading_infos.missing_keys.discard(target_name)
     # If not already offloaded, or if we applied any special Operation except Renaming, we need to re-save
     if target_name not in disk_offload_index or isinstance(applied_ops, WeightConverter):
         disk_offload_index = offload_weight(param, target_name, disk_offload_folder, disk_offload_index)
@@ -1108,10 +1121,8 @@ def convert_and_load_state_dict_in_model(
     meta_model_state_dict = model.state_dict()
     model_buffers = {k for k, _ in model.named_buffers()}
 
-    missing_keys = set(meta_model_state_dict.keys())
-    conversion_errors = {}
-    mismatch_keys = set()
-    unexpected_keys = set()
+    # We start from all missing keys, and we will remove/add them from the proper containers as loading advances
+    loading_infos = LoadStateDictInfo(missing_keys=set(meta_model_state_dict.keys()), unexpected_keys=set(), mismatched_keys=set(), conversion_errors={}, error_msgs=[])
 
     # We use threading by default, if not explicitly deactivated via env variable. If we have to offload,
     # we cannot use it either to control the memory as we are under memory constraints, so we need to be sequential
@@ -1141,7 +1152,7 @@ def convert_and_load_state_dict_in_model(
         )
 
         # 2. finally, collect the tensor into the proper converter
-        if renamed_key in missing_keys:
+        if renamed_key in meta_model_state_dict:
             empty_param = meta_model_state_dict.get(renamed_key)
             # If we enter here, we have a WeightConverter operation to perform
             if source_pattern is not None:
@@ -1202,9 +1213,9 @@ def convert_and_load_state_dict_in_model(
         elif source_pattern is not None:  # add all target keys as unexpected
             mapping = pattern_to_converter[source_pattern]
             for k in mapping.target_patterns:
-                unexpected_keys.add(renamed_key.replace(mapping.target_patterns[0], k))
+                loading_infos.unexpected_keys.add(renamed_key.replace(mapping.target_patterns[0], k))
         else:
-            unexpected_keys.add(renamed_key)
+            loading_infos.unexpected_keys.add(renamed_key)
 
     try:
         total_entries = len(param_name_to_load)
@@ -1214,13 +1225,12 @@ def convert_and_load_state_dict_in_model(
                 pbar.set_postfix({"Materializing param": first_param_name})
                 pbar.refresh()
                 try:
-                    realized_value, conversion_errors = mapping.convert(
+                    realized_value = mapping.convert(
                         first_param_name,
                         model=model,
                         config=model.config,
                         hf_quantizer=hf_quantizer,
-                        missing_keys=missing_keys,
-                        conversion_errors=conversion_errors,
+                        loading_infos=loading_infos,
                     )
                     for target_name, param in realized_value.items():
                         param = param[0] if isinstance(param, list) else param
@@ -1228,16 +1238,14 @@ def convert_and_load_state_dict_in_model(
                         # Offloading support
                         if param_device == "disk" and (target_name not in model_buffers or offload_buffers):
                             disk_offload_index = offload_and_maybe_resave_param(
-                                target_name, param, missing_keys, disk_offload_folder, disk_offload_index, mapping
+                                target_name, param, loading_infos, disk_offload_folder, disk_offload_index, mapping
                             )
                         else:
                             set_param_for_module(
                                 model,
                                 target_name,
                                 param,
-                                mismatch_keys,
-                                missing_keys,
-                                unexpected_keys,
+                                loading_infos,
                                 mapping.distributed_operation,
                                 hf_quantizer,
                             )
@@ -1256,7 +1264,7 @@ def convert_and_load_state_dict_in_model(
 
     # Keep the current weight conversion mapping for later saving (in case it was coming directly from the user)
     model._weight_conversions = weight_mapping
-    return missing_keys, unexpected_keys, mismatch_keys, disk_offload_index, conversion_errors
+    return loading_infos, disk_offload_index
 
 
 def revert_weight_conversion(model: PreTrainedModel, state_dict: dict[str, torch.Tensor]):
@@ -1303,7 +1311,7 @@ def revert_weight_conversion(model: PreTrainedModel, state_dict: dict[str, torch
     new_state_dict = {}
     for first_param_name, reversed_converter in conversion_mapping.items():
         # Apply the reverse converter
-        realized_value, _ = reversed_converter.convert(first_param_name, model=model, config=model.config)
+        realized_value = reversed_converter.convert(first_param_name, model=model, config=model.config)
         for target_name, param in realized_value.items():
             param = param[0] if isinstance(param, list) else param
             new_state_dict[target_name] = param

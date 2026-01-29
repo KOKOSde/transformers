@@ -49,6 +49,7 @@ from .conversion_mapping import get_model_conversion_mapping
 from .core_model_loading import (
     WeightConverter,
     WeightRenaming,
+    LoadStateDictInfo,
     convert_and_load_state_dict_in_model,
     revert_weight_conversion,
 )
@@ -189,21 +190,6 @@ class LoadStateDictConfig:
     @property
     def is_quantized(self) -> bool:
         return self.hf_quantizer is not None
-
-
-@dataclass
-class LoadStateDictInfo:
-    """
-    Return container for state-dict loading results and diagnostics.
-    This simplifies the code a bit.
-    """
-
-    missing_keys: set[str]
-    unexpected_keys: set[str]
-    mismatched_keys: set[tuple[str, torch.Size]]
-    disk_offload_index: dict[str, str] | None
-    error_msgs: list[str]
-    conversion_errors: set[str]
 
 
 def is_local_dist_rank_0():
@@ -4207,7 +4193,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
                 state_dict = merged_state_dict
             error_msgs, missing_keys = _load_state_dict_into_zero3_model(model, state_dict, load_config)
             # This is not true but for now we assume only best-case scenario with deepspeed, i.e. perfectly matching checkpoints
-            unexpected_keys, mismatched_keys, conversion_errors = set(), set(), set()
+            loading_infos = LoadStateDictInfo(missing_keys=missing_keys, error_msgs=error_msgs, unexpected_keys=set(), mismatched_keys=set(), conversion_errors={})
         else:
             all_pointer = set()
             if state_dict is not None:
@@ -4227,70 +4213,43 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
             else:
                 raise ValueError("Neither a state dict nor checkpoint files were found.")
 
-            missing_keys, unexpected_keys, mismatched_keys, disk_offload_index, conversion_errors = (
-                convert_and_load_state_dict_in_model(
-                    model=model,
-                    state_dict=merged_state_dict,
-                    load_config=load_config,
-                    tp_plan=model._tp_plan,
-                    dtype_plan=model.dtype_plan,
-                    disk_offload_index=disk_offload_index,
-                )
+            loading_infos, disk_offload_index = convert_and_load_state_dict_in_model(
+                model=model,
+                state_dict=merged_state_dict,
+                load_config=load_config,
+                tp_plan=model._tp_plan,
+                dtype_plan=model.dtype_plan,
+                disk_offload_index=disk_offload_index,
             )
+            
 
             # finally close all opened file pointers
             for k in all_pointer:
                 k.__exit__(None, None, None)
-
-        return LoadStateDictInfo(
-            missing_keys=missing_keys,
-            unexpected_keys=unexpected_keys,
-            mismatched_keys=mismatched_keys,
-            disk_offload_index=disk_offload_index,
-            error_msgs=error_msgs,
-            conversion_errors=conversion_errors,
-        )
-
-    @staticmethod
-    def _finalize_load_state_dict(
-        model,
-        load_config: LoadStateDictConfig,
-        load_info: LoadStateDictInfo,
-    ) -> LoadStateDictInfo:
-        # TODO @ArthurZucker this will be in a separate function to allows people not to run this
-        # for more granularity
 
         # Marks tied weights as `_is_hf_initialized` to avoid initializing them (it's very important for efficiency)
         model.mark_tied_weights_as_initialized()
 
         # Move missing (and potentially mismatched) keys and non-persistent buffers back to their expected device from
         # meta device (because they were not moved when loading the weights as they were not in the loaded state dict)
-        missing_and_mismatched = load_info.missing_keys | {k[0] for k in load_info.mismatched_keys}
         model._move_missing_keys_from_meta_to_device(
-            missing_and_mismatched, load_config.device_map, load_config.device_mesh, load_config.hf_quantizer
+            loading_infos.missing_and_mismatched, load_config.device_map, load_config.device_mesh, load_config.hf_quantizer
         )
 
         # Correctly initialize the missing (and potentially mismatched) keys (all parameters without the `_is_hf_initialized` flag)
         model._initialize_missing_keys(load_config.is_quantized)
 
         # Tie the weights
-        model.tie_weights(missing_keys=load_info.missing_keys, recompute_mapping=False)
+        model.tie_weights(missing_keys=loading_infos.missing_keys, recompute_mapping=False)
 
         # Adjust missing and unexpected keys
-        missing_keys, unexpected_keys = model._adjust_missing_and_unexpected_keys(
-            load_info.missing_keys, load_info.unexpected_keys
-        )
+        model._adjust_missing_and_unexpected_keys(loading_infos)
 
         log_state_dict_report(
             model=model,
             load_config=load_config,
             logger=logger,
-            error_msgs=load_info.error_msgs,
-            unexpected_keys=unexpected_keys,
-            missing_keys=missing_keys,
-            mismatched_keys=load_info.mismatched_keys,
-            mismatched_shapes=load_info.mismatched_keys,
-            conversion_errors=load_info.conversion_errors,
+            loading_infos,
         )
 
         return replace(load_info, missing_keys=missing_keys, unexpected_keys=unexpected_keys)
