@@ -20,7 +20,7 @@ import os
 import re
 from abc import abstractmethod
 from collections import defaultdict
-from collections.abc import Callable, MutableSet
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from copy import deepcopy
@@ -871,9 +871,7 @@ def set_param_for_module(
     model: PreTrainedModel,
     target_name: str,
     param_value: torch.Tensor,
-    mismatch_keys: MutableSet[tuple[str, torch.Size, torch.Size]],
-    missing_keys: MutableSet[str],
-    unexpected_keys: MutableSet[str],
+    loading_info: LoadStateDictInfo,
     distributed_operation: TensorParallelLayer | None,
     hf_quantizer: HfQuantizer,
 ):
@@ -882,7 +880,7 @@ def set_param_for_module(
 
     ref = getattr(module_obj, param_name)
     if ref is None:
-        unexpected_keys.add(target_name)
+        loading_info.unexpected_keys.add(target_name)
     else:
         if not isinstance(param_value, torch.nn.Parameter):
             if distributed_operation is not None:
@@ -899,9 +897,9 @@ def set_param_for_module(
                 param_value = torch.nn.Parameter(param_value, requires_grad=param_value.is_floating_point())
 
         # Remove from missing keys (it's either mismatched, or all good)
-        missing_keys.discard(target_name)
+        loading_info.missing_keys.discard(target_name)
         if ref is not None and ref.shape != param_value.shape and hf_quantizer is None:
-            mismatch_keys.add((target_name, param_value.shape, ref.shape))
+            loading_info.mismatch_keys.add((target_name, param_value.shape, ref.shape))
         else:
             # super important otherwise _init_weight will re-init the param
             param_value._is_hf_initialized = True

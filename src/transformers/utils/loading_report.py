@@ -133,6 +133,18 @@ class LoadStateDictInfo:
     """
     Mutable container for state-dict loading results and diagnostics. Each entry in this structure is mutable,
     and will usually be mutated in-place during the loading pipeline.
+
+    Attributes:
+        missing_keys (`set[str]`):
+            Keys that are missing from the loaded checkpoints.
+        unexpected_keys (`set[str]`):
+            Keys that are found in the checkpoints, but not in the model's modeling architecture.
+        mismatched_keys (`set[tuple[str, tuple[int], tuple[int]]]`):
+            Keys that are found in the checkpoints and the model's modeling architecture, but with a different shape.
+        error_msgs ( `list[str]`):
+            Some potential error messages.
+        conversion_errors (`dict[str, str]`):
+            Errors happening during the on-the-fly weight conversion process.
     """
 
     missing_keys: set[str]
