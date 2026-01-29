@@ -588,7 +588,13 @@ class PeftAdapterMixin:
 
         loading_info.missing_keys = [k for k in loading_info.missing_keys if is_adapter_key(k)]
 
-        log_state_dict_report(model=self, load_config=load_config, logger=logger, loading_info=loading_info)
+        log_state_dict_report(
+            model=self,
+            pretrained_model_name_or_path=load_config.pretrained_model_name_or_path,
+            ignore_mismatched_sizes=load_config.ignore_mismatched_sizes,
+            loading_info=loading_info,
+            logger=logger,
+        )
 
     def enable_peft_hotswap(
         self, target_rank: int = 128, check_compiled: Literal["error", "warn", "ignore"] = "error"

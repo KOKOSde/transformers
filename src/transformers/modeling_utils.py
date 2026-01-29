@@ -4245,9 +4245,10 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
 
         log_state_dict_report(
             model=model,
-            load_config=load_config,
-            logger=logger,
+            pretrained_model_name_or_path=load_config.pretrained_model_name_or_path,
+            ignore_mismatched_sizes=load_config.ignore_mismatched_sizes,
             loading_info=loading_info,
+            logger=logger,
         )
 
         return loading_info, disk_offload_index

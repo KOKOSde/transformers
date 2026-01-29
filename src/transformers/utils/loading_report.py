@@ -217,11 +217,11 @@ class LoadStateDictInfo:
 
 
 def log_state_dict_report(
-    *,
     model,
-    load_config,
-    logger: logging.Logger | None = None,
+    pretrained_model_name_or_path: str,
+    ignore_mismatched_sizes: bool,
     loading_info: LoadStateDictInfo,
+    logger: logging.Logger | None = None,
 ):
     """
     Log a readable report about state_dict loading issues.
@@ -231,9 +231,6 @@ def log_state_dict_report(
     """
     if logger is None:
         logger = logging.getLogger(__name__)
-
-    pretrained_model_name_or_path = load_config.pretrained_model_name_or_path
-    ignore_mismatched_sizes = load_config.ignore_mismatched_sizes
 
     # Re-raise errors early if needed
     if loading_info.error_msgs:
