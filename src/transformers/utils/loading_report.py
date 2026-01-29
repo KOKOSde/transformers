@@ -14,37 +14,9 @@
 import logging
 import re
 import shutil
-import sys
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from typing import Any
-
-
-@dataclass
-class LoadStateDictInfo:
-    """
-    Mutable container for state-dict loading results and diagnostics. Each entry in this structure is mutable,
-    and will usually be mutated in-place during the loading pipeline.
-    """
-
-    missing_keys: set[str]
-    unexpected_keys: set[str]
-    mismatched_keys: set[tuple[str, tuple[int]]]
-    error_msgs: list[str]
-    conversion_errors: set[str]
-
-    def missing_and_mismatched(self):
-        """Return all effectively missing keys, including `missing` and `mismatched` keys."""
-        return self.missing_keys | {k[0] for k in self.mismatched_keys}
-
-    def to_dict(self):
-        # Does not include the `conversion_errors` to be coherent with legacy reporting in the tests
-        return {
-            "missing_keys": self.missing_keys,
-            "unexpected_keys": self.unexpected_keys,
-            "mismatched_keys": self.mismatched_keys,
-            "error_msgs": self.error_msgs,
-        }
 
 
 _DIGIT_RX = re.compile(r"(?<=\.)(\d+)(?=\.|$)")  # numbers between dots or at the end
@@ -110,26 +82,6 @@ def update_key_name(mapping: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-# We have a class to simplify disabling ANSI colors
-class ANSI:
-    palette = {
-        "reset": "[0m",
-        "red": "[31m",
-        "yellow": "[33m",
-        "orange": "[38;5;208m",
-        "purple": "[35m",
-        "bold": "[1m",
-        "italic": "[3m",
-        "dim": "[2m",
-    }
-
-    def __init__(self, enable):
-        self.enable = enable
-
-    def __getitem__(self, key):
-        return self.palette[key] if self.enable else ""
-
-
 _ansi_re = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -153,8 +105,20 @@ def _make_table(rows, headers):
     return "\n".join([header_line, sep_line] + body)
 
 
-def _color(s, color, ansi):
-    return f"{ansi[color]}{s}{ansi['reset']}"
+PALETTE = {
+    "reset": "[0m",
+    "red": "[31m",
+    "yellow": "[33m",
+    "orange": "[38;5;208m",
+    "purple": "[35m",
+    "bold": "[1m",
+    "italic": "[3m",
+    "dim": "[2m",
+}
+
+
+def _color(s, color):
+    return f"{PALETTE[color]}{s}{PALETTE['reset']}"
 
 
 def _get_terminal_width(default=80):
@@ -164,15 +128,103 @@ def _get_terminal_width(default=80):
         return default
 
 
+@dataclass
+class LoadStateDictInfo:
+    """
+    Mutable container for state-dict loading results and diagnostics. Each entry in this structure is mutable,
+    and will usually be mutated in-place during the loading pipeline.
+    """
+
+    missing_keys: set[str]
+    unexpected_keys: set[str]
+    mismatched_keys: set[tuple[str, tuple[int], tuple[int]]]
+    error_msgs: list[str]
+    conversion_errors: dict[str, str]
+
+    def missing_and_mismatched(self):
+        """Return all effectively missing keys, including `missing` and `mismatched` keys."""
+        return self.missing_keys | {k[0] for k in self.mismatched_keys}
+
+    def to_dict(self):
+        # Does not include the `conversion_errors` to be coherent with legacy reporting in the tests
+        return {
+            "missing_keys": self.missing_keys,
+            "unexpected_keys": self.unexpected_keys,
+            "mismatched_keys": self.mismatched_keys,
+            "error_msgs": self.error_msgs,
+        }
+
+    def create_loading_report(self) -> str | None:
+        """Generate the minimal table of a loading report."""
+        term_w = _get_terminal_width()
+
+        rows = []
+        tips = ""
+        if self.unexpected_keys:
+            tips += (
+                f"\n- {_color('UNEXPECTED', 'orange') + PALETTE['italic']}\t:can be ignored when loading from different "
+                "task/architecture; not ok if you expect identical arch."
+            )
+            for k in update_key_name(self.unexpected_keys):
+                status = _color("UNEXPECTED", "orange")
+                rows.append([k, status, "", ""])
+
+        if self.missing_keys:
+            tips += (
+                f"\n- {_color('MISSING', 'red') + PALETTE['italic']}\t:those params were newly initialized because missing "
+                "from the checkpoint. Consider training on your downstream task."
+            )
+            for k in update_key_name(self.missing_keys):
+                status = _color("MISSING", "red")
+                rows.append([k, status, ""])
+
+        if self.mismatched_keys:
+            tips += (
+                f"\n- {_color('MISMATCH', 'yellow') + PALETTE['italic']}\t:ckpt weights were loaded, but they did not match "
+                "the original empty weight shapes."
+            )
+            iterator = {a: (b, c) for a, b, c in self.mismatched_shapes}
+            for key, (shape_ckpt, shape_model) in update_key_name(iterator).items():
+                status = _color("MISMATCH", "yellow")
+                data = [
+                    key,
+                    status,
+                    f"Reinit due to size mismatch - ckpt: {str(shape_ckpt)} vs model:{str(shape_model)}",
+                ]
+                rows.append(data)
+
+        if self.conversion_errors:
+            tips += f"\n- {_color('CONVERSION', 'purple') + PALETTE['italic']}\t:originate from the conversion scheme"
+            for k, v in update_key_name(self.conversion_errors).items():
+                status = _color("CONVERSION", "purple")
+                _details = v[:term_w]
+                rows.append([k, status, _details])
+
+        # If nothing is wrong, return None
+        if len(rows) == 0:
+            return None
+
+        headers = ["Key", "Status"]
+        if term_w > 200:
+            headers += ["Details"]
+        else:
+            headers += ["", ""]
+        table = _make_table(rows, headers=headers)
+        tips = f"\n\n{PALETTE['italic']}Notes:{tips}{PALETTE['reset']}"
+        report = table + tips
+
+        return report
+
+
 def log_state_dict_report(
     *,
     model,
     load_config,
     logger: logging.Logger | None = None,
-    loading_infos,
-    color=True,  # allow disabling for plain logs
+    loading_infos: LoadStateDictInfo,
 ):
-    """Log a readable report about state_dict loading issues.
+    """
+    Log a readable report about state_dict loading issues.
 
     This version is terminal-size aware: for very small terminals it falls back to a compact
     Key | Status view so output doesn't wrap badly.
@@ -183,10 +235,6 @@ def log_state_dict_report(
     pretrained_model_name_or_path = load_config.pretrained_model_name_or_path
     ignore_mismatched_sizes = load_config.ignore_mismatched_sizes
 
-    # Detect whether the current stdout supports ANSI colors; allow callers to pass `color=False` to force no color
-    color_enabled = bool(color and sys.stdout.isatty())
-    ansi = ANSI(color_enabled)
-
     # Re-raise errors early if needed
     if loading_infos.error_msgs:
         error_msg = "\n\t".join(loading_infos.error_msgs)
@@ -196,64 +244,15 @@ def log_state_dict_report(
             )
         raise RuntimeError(f"Error(s) in loading state_dict for {model.__class__.__name__}:\n\t{error_msg}")
 
-    term_w = _get_terminal_width()
-    rows = []
-    if loading_infos.unexpected_keys:
-        for k in update_key_name(loading_infos.unexpected_keys):
-            status = "UNEXPECTED"
-            status = _color(status, "orange", ansi)
-            rows.append([k, status, "", ""])
-
-    if loading_infos.missing_keys:
-        for k in update_key_name(loading_infos.missing_keys):
-            status = "MISSING"
-            status = _color(status, "red", ansi)
-            rows.append([k, status, ""])
-
-    if loading_infos.mismatched_keys:
-        iterator = {a: (b, c) for a, b, c in loading_infos.mismatched_shapes}
-        for key, (shape_ckpt, shape_model) in update_key_name(iterator).items():
-            status = "MISMATCH"
-            status = _color(status, "yellow", ansi)
-            data = [key, status]
-            data.append(
-                " ".join(["Reinit due to size mismatch", f"ckpt: {str(shape_ckpt)} vs model:{str(shape_model)}"])
-            )
-            rows.append(data)
-
-    if loading_infos.conversion_errors:
-        for k, v in update_key_name(loading_infos.conversion_errors).items():
-            status = "CONVERSION"
-            status = _color(status, "purple", ansi)
-            _details = v[:term_w]
-            rows.append([k, status, _details])
-
-    if not rows:
+    # Create the report table
+    report = loading_infos.create_loading_report()
+    if report is None:
         return
 
-    headers = ["Key", "Status"]
-    if term_w > 200:
-        headers += ["Details"]
-    else:
-        headers += ["", ""]
-    table = _make_table(rows, headers=headers)
-
-    prelude = (
-        f"{ansi['bold']}{model.__class__.__name__} LOAD REPORT{ansi['reset']} from: {pretrained_model_name_or_path}\n"
-    )
-    tips = f"\n\n{ansi['italic']}Notes:"
-    if loading_infos.unexpected_keys:
-        tips += f"\n- {_color('UNEXPECTED', 'orange', ansi) + ansi['italic']}\t:can be ignored when loading from different task/architecture; not ok if you expect identical arch."
-    if loading_infos.missing_keys:
-        loading_infos.tips += f"\n- {_color('MISSING', 'red', ansi) + ansi['italic']}\t:those params were newly initialized because missing from the checkpoint. Consider training on your downstream task."
-    if loading_infos.mismatched_keys:
-        loading_infos.tips += f"\n- {_color('MISMATCH', 'yellow', ansi) + ansi['italic']}\t:ckpt weights were loaded, but they did not match the original empty weight shapes."
-    if loading_infos.conversion_errors:
-        tips += f"\n- {_color('CONVERSION', 'purple', ansi) + ansi['italic']}\t:originate from the conversion scheme"
-    tips += f"{ansi['reset']}"
+    prelude = f"{PALETTE['bold']}{model.__class__.__name__} LOAD REPORT{PALETTE['reset']} from: {pretrained_model_name_or_path}\n"
 
     # Log the report as warning
-    logger.warning(prelude + table + tips)
+    logger.warning(prelude + report)
 
     # Re-raise in those case, after the report
     if loading_infos.conversion_errors:
@@ -265,5 +264,3 @@ def log_state_dict_report(
         raise RuntimeError(
             "You set `ignore_mismatched_sizes` to `False`, thus raising an error. For details look at the above report!"
         )
-
-    return prelude + table + tips
