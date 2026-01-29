@@ -20,7 +20,7 @@ import os
 import re
 from abc import abstractmethod
 from collections import defaultdict
-from collections.abc import Callable, MutableMapping, MutableSet
+from collections.abc import Callable, MutableSet
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from copy import deepcopy
@@ -49,7 +49,6 @@ if TYPE_CHECKING:
 logger = logging.get_logger(__name__)
 
 
-
 @dataclass
 class LoadStateDictInfo:
     """
@@ -62,6 +61,17 @@ class LoadStateDictInfo:
     mismatched_keys: set[tuple[str, torch.Size]]
     error_msgs: list[str]
     conversion_errors: set[str]
+
+    def missing_and_mismatched(self):
+        return self.missing_keys | {k[0] for k in self.mismatched_keys}
+
+    def to_dict(self):
+        return {
+            "missing_keys": self.missing_keys,
+            "unexpected_keys": self.unexpected_keys,
+            "mismatched_keys": self.mismatched_keys,
+            "error_msgs": self.error_msgs,
+        }
 
 
 def process_target_pattern(pattern: str) -> tuple[str, str | None]:
@@ -899,7 +909,9 @@ def log_conversion_errors(
             )
         elif isinstance(extras, str):
             suffix = f" via {op_name}" if op_name else ""
-            loading_infos.conversion_errors[first_target_key] = f"{e}\nError{suffix} when processing parameter {extras}"
+            loading_infos.conversion_errors[first_target_key] = (
+                f"{e}\nError{suffix} when processing parameter {extras}"
+            )
         elif extras is None and op_name:
             loading_infos.conversion_errors[first_target_key] = f"{op_name}: {e}"
         else:
@@ -1122,7 +1134,13 @@ def convert_and_load_state_dict_in_model(
     model_buffers = {k for k, _ in model.named_buffers()}
 
     # We start from all missing keys, and we will remove/add them from the proper containers as loading advances
-    loading_infos = LoadStateDictInfo(missing_keys=set(meta_model_state_dict.keys()), unexpected_keys=set(), mismatched_keys=set(), conversion_errors={}, error_msgs=[])
+    loading_infos = LoadStateDictInfo(
+        missing_keys=set(meta_model_state_dict.keys()),
+        unexpected_keys=set(),
+        mismatched_keys=set(),
+        conversion_errors={},
+        error_msgs=[],
+    )
 
     # We use threading by default, if not explicitly deactivated via env variable. If we have to offload,
     # we cannot use it either to control the memory as we are under memory constraints, so we need to be sequential

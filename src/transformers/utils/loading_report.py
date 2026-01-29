@@ -16,7 +16,6 @@ import re
 import shutil
 import sys
 from collections import OrderedDict, defaultdict
-from collections.abc import Iterable
 from typing import Any
 
 
@@ -153,12 +152,6 @@ def log_state_dict_report(
     if logger is None:
         logger = logging.getLogger(__name__)
 
-    error_msgs = loading_infos.error_msgs or []
-    unexpected_keys = unexpected_keys or []
-    missing_keys = missing_keys or []
-    mismatched_keys = mismatched_keys or []
-    mismatched_shapes = mismatched_shapes or []
-    conversion_errors = conversion_errors or {}
     pretrained_model_name_or_path = load_config.pretrained_model_name_or_path
     ignore_mismatched_sizes = load_config.ignore_mismatched_sizes
 
@@ -168,7 +161,7 @@ def log_state_dict_report(
 
     # Re-raise errors early if needed
     if loading_infos.error_msgs:
-        error_msg = "\n\t".join(error_msgs)
+        error_msg = "\n\t".join(loading_infos.error_msgs)
         if "size mismatch" in error_msg:
             error_msg += (
                 "\n\tYou may consider adding `ignore_mismatched_sizes=True` to `from_pretrained(...)` if appropriate."
@@ -221,13 +214,13 @@ def log_state_dict_report(
         f"{ansi['bold']}{model.__class__.__name__} LOAD REPORT{ansi['reset']} from: {pretrained_model_name_or_path}\n"
     )
     tips = f"\n\n{ansi['italic']}Notes:"
-    if unexpected_keys:
+    if loading_infos.unexpected_keys:
         tips += f"\n- {_color('UNEXPECTED', 'orange', ansi) + ansi['italic']}\t:can be ignored when loading from different task/architecture; not ok if you expect identical arch."
-    if missing_keys:
-        tips += f"\n- {_color('MISSING', 'red', ansi) + ansi['italic']}\t:those params were newly initialized because missing from the checkpoint. Consider training on your downstream task."
-    if mismatched_keys:
-        tips += f"\n- {_color('MISMATCH', 'yellow', ansi) + ansi['italic']}\t:ckpt weights were loaded, but they did not match the original empty weight shapes."
-    if conversion_errors:
+    if loading_infos.missing_keys:
+        loading_infos.tips += f"\n- {_color('MISSING', 'red', ansi) + ansi['italic']}\t:those params were newly initialized because missing from the checkpoint. Consider training on your downstream task."
+    if loading_infos.mismatched_keys:
+        loading_infos.tips += f"\n- {_color('MISMATCH', 'yellow', ansi) + ansi['italic']}\t:ckpt weights were loaded, but they did not match the original empty weight shapes."
+    if loading_infos.conversion_errors:
         tips += f"\n- {_color('CONVERSION', 'purple', ansi) + ansi['italic']}\t:originate from the conversion scheme"
     tips += f"{ansi['reset']}"
 
