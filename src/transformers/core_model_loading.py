@@ -682,7 +682,7 @@ class WeightRenaming(WeightTransform):
                     full_layer_name=target_key,
                     model=model,
                     config=config,
-                    missing_keys=loading_info.missing_keys,
+                    missing_keys=loading_info.missing_keys if loading_info else None,
                 )
 
         return collected_tensors
@@ -732,7 +732,7 @@ class WeightConverter(WeightTransform):
                     full_layer_name=layer_name,
                     model=model,
                     config=config,
-                    missing_keys=loading_info.missing_keys,
+                    missing_keys=loading_info.missing_keys if loading_info else None,
                 )
 
         # Tensors are returned from ops with the target patterns, we need to expand them to full name.
@@ -760,7 +760,7 @@ class WeightConverter(WeightTransform):
                     full_layer_name=layer_name,
                     config=config,
                     model=model,
-                    missing_keys=loading_info.missing_keys,
+                    missing_keys=loading_info.missing_keys if loading_info else None,
                 )
         return collected_tensors
 
