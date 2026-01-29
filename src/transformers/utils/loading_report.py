@@ -142,12 +142,7 @@ def log_state_dict_report(
     model,
     load_config,
     logger: logging.Logger | None = None,
-    error_msgs: Iterable[str] | None = None,
-    unexpected_keys=None,
-    missing_keys=None,
-    mismatched_keys=None,
-    mismatched_shapes=None,
-    conversion_errors=None,
+    loading_infos,
     color=True,  # allow disabling for plain logs
 ):
     """Log a readable report about state_dict loading issues.
@@ -158,7 +153,7 @@ def log_state_dict_report(
     if logger is None:
         logger = logging.getLogger(__name__)
 
-    error_msgs = error_msgs or []
+    error_msgs = loading_infos.error_msgs or []
     unexpected_keys = unexpected_keys or []
     missing_keys = missing_keys or []
     mismatched_keys = mismatched_keys or []
@@ -172,7 +167,7 @@ def log_state_dict_report(
     ansi = ANSI(color_enabled)
 
     # Re-raise errors early if needed
-    if error_msgs:
+    if loading_infos.error_msgs:
         error_msg = "\n\t".join(error_msgs)
         if "size mismatch" in error_msg:
             error_msg += (
@@ -182,20 +177,20 @@ def log_state_dict_report(
 
     term_w = _get_terminal_width()
     rows = []
-    if unexpected_keys:
-        for k in update_key_name(unexpected_keys):
+    if loading_infos.unexpected_keys:
+        for k in update_key_name(loading_infos.unexpected_keys):
             status = "UNEXPECTED"
             status = _color(status, "orange", ansi)
             rows.append([k, status, "", ""])
 
-    if missing_keys:
-        for k in update_key_name(missing_keys):
+    if loading_infos.missing_keys:
+        for k in update_key_name(loading_infos.missing_keys):
             status = "MISSING"
             status = _color(status, "red", ansi)
             rows.append([k, status, ""])
 
-    if mismatched_keys:
-        iterator = {a: (b, c) for a, b, c in mismatched_shapes}
+    if loading_infos.mismatched_keys:
+        iterator = {a: (b, c) for a, b, c in loading_infos.mismatched_shapes}
         for key, (shape_ckpt, shape_model) in update_key_name(iterator).items():
             status = "MISMATCH"
             status = _color(status, "yellow", ansi)
@@ -205,8 +200,8 @@ def log_state_dict_report(
             )
             rows.append(data)
 
-    if conversion_errors:
-        for k, v in update_key_name(conversion_errors).items():
+    if loading_infos.conversion_errors:
+        for k, v in update_key_name(loading_infos.conversion_errors).items():
             status = "CONVERSION"
             status = _color(status, "purple", ansi)
             _details = v[:term_w]
@@ -240,12 +235,12 @@ def log_state_dict_report(
     logger.warning(prelude + table + tips)
 
     # Re-raise in those case, after the report
-    if conversion_errors:
+    if loading_infos.conversion_errors:
         raise RuntimeError(
             "We encountered some issues during automatic conversion of the weights. For details look at the `CONVERSION` entries of "
             "the above report!"
         )
-    if not ignore_mismatched_sizes and mismatched_keys:
+    if not ignore_mismatched_sizes and loading_infos.mismatched_keys:
         raise RuntimeError(
             "You set `ignore_mismatched_sizes` to `False`, thus raising an error. For details look at the above report!"
         )

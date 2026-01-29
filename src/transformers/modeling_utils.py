@@ -4508,11 +4508,9 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         else:
             self.initialize_weights()
 
-    def _adjust_missing_and_unexpected_keys(
-        self, missing_keys: set[str], unexpected_keys: set[str]
-    ) -> tuple[set[str], set[str]]:
+    def _adjust_missing_and_unexpected_keys(self, loading_infos: LoadStateDictInfo) -> None:
         """Adjust the `missing_keys` and `unexpected_keys` based on current model's exception rules, to avoid
-        raising unneeded warnings/errors.
+        raising unneeded warnings/errors. This is performed in-place.
         """
         # Old checkpoints may have keys for rotary_emb.inv_freq forach layer, however we moved this buffer to the main model
         # (so the buffer name has changed). Remove them in such a case. This is another exception that was not added to
@@ -4530,13 +4528,11 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
 
         # Clean-up missing keys
         if ignore_missing_regex is not None:
-            missing_keys = {key for key in missing_keys if ignore_missing_regex.search(key) is None}
+            loading_infos.missing_keys = {key for key in loading_infos.missing_keys if ignore_missing_regex.search(key) is None}
 
         # Clean-up unexpected keys
         if ignore_unexpected_regex is not None:
-            unexpected_keys = {key for key in unexpected_keys if ignore_unexpected_regex.search(key) is None}
-
-        return missing_keys, unexpected_keys
+            loading_infos.unexpected_keys = {key for key in loading_infos.unexpected_keys if ignore_unexpected_regex.search(key) is None}
 
     def mark_tied_weights_as_initialized(self):
         """Adds the `_is_hf_initialized` flag on parameters that will be tied, in order to avoid initializing them
