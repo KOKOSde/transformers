@@ -136,11 +136,11 @@ class LoadStateDictInfo:
 
     Attributes:
         missing_keys (`set[str]`):
-            Keys that are missing from the loaded checkpoints.
+            Keys that are missing from the loaded checkpoints but expected in the model's architecture.
         unexpected_keys (`set[str]`):
-            Keys that are found in the checkpoints, but not in the model's modeling architecture.
+            Keys that are found in the checkpoints, but not expected in the model's architecture.
         mismatched_keys (`set[tuple[str, tuple[int], tuple[int]]]`):
-            Keys that are found in the checkpoints and the model's modeling architecture, but with a different shape.
+            Keys that are found in the checkpoints and are expected in the model's architecture, but with a different shape.
         error_msgs ( `list[str]`):
             Some potential error messages.
         conversion_errors (`dict[str, str]`):
