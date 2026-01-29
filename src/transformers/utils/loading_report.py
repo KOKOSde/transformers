@@ -142,7 +142,7 @@ class LoadStateDictInfo:
     conversion_errors: dict[str, str]
 
     def missing_and_mismatched(self):
-        """Return all effectively missing keys, including `missing` and `mismatched` keys."""
+        """Return all effective missing keys, including `missing` and `mismatched` keys."""
         return self.missing_keys | {k[0] for k in self.mismatched_keys}
 
     def to_dict(self):
